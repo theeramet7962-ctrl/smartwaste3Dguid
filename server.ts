@@ -26,6 +26,80 @@ async function startServer() {
     });
   };
 
+  // Helper for friendly error messages
+  const formatThaiErrorMessage = (error: any): string => {
+    if (!error) return "เกิดข้อผิดพลาดในการประมวลผล กรุณาลองใหม่อีกครั้ง";
+    const raw = error.message || String(error);
+
+    try {
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) {
+        const parsed = JSON.parse(match[0]);
+        if (
+          parsed?.error?.code === 503 ||
+          parsed?.error?.status === "UNAVAILABLE" ||
+          parsed?.error?.message?.includes("high demand")
+        ) {
+          return "ขณะนี้ระบบ AI มีผู้ใช้งานจำนวนมากชั่วคราว (High Demand) กรุณากดปุ่ม 'ลองใหม่อีกครั้ง'";
+        }
+        if (parsed?.error?.code === 429 || parsed?.error?.status === "RESOURCE_EXHAUSTED") {
+          return "โควตาการเรียกใช้งานระบบชั่วคราวหนาแน่น กรุณารอสักครู่แล้วลองใหม่";
+        }
+        if (parsed?.error?.message) {
+          return `ระบบ AI ขัดข้อง: ${parsed.error.message}`;
+        }
+      }
+    } catch {}
+
+    if (raw.includes("503") || raw.includes("high demand") || raw.includes("UNAVAILABLE")) {
+      return "ขณะนี้ระบบ AI มีผู้ใช้งานจำนวนมากชั่วคราว (High Demand) กรุณากดปุ่ม 'ลองใหม่อีกครั้ง'";
+    }
+
+    return raw;
+  };
+
+  // Helper to execute generateContent with automatic fallback models
+  const generateContentWithFallback = async (ai: GoogleGenAI, payload: any) => {
+    const candidateModels = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"];
+    let lastError: any = null;
+
+    for (let i = 0; i < candidateModels.length; i++) {
+      const model = candidateModels[i];
+      try {
+        console.log(`[Gemini] Calling model ${model}...`);
+        const response = await ai.models.generateContent({
+          ...payload,
+          model,
+        });
+        return response;
+      } catch (err: any) {
+        lastError = err;
+        const msg = err?.message || String(err);
+        console.warn(`[Gemini] Model ${model} returned error:`, msg);
+
+        const isOverloadedOrUnavailable =
+          msg.includes("503") ||
+          msg.includes("high demand") ||
+          msg.includes("UNAVAILABLE") ||
+          msg.includes("429") ||
+          msg.includes("ResourceExhausted") ||
+          msg.includes("overloaded");
+
+        if (isOverloadedOrUnavailable && i < candidateModels.length - 1) {
+          console.log(`[Gemini] Switching to fallback model: ${candidateModels[i + 1]}`);
+          await new Promise((r) => setTimeout(r, 500));
+          continue;
+        }
+
+        if (i < candidateModels.length - 1) {
+          continue;
+        }
+      }
+    }
+
+    throw lastError;
+  };
+
   // API Route: Analyze Waste Image
   app.post("/api/analyze-waste", async (req, res) => {
     try {
@@ -39,7 +113,12 @@ async function startServer() {
       let base64Data = image;
       let mimeType = "image/jpeg";
 
-      if (image.includes(";base64,")) {
+      if (image.startsWith("http://") || image.startsWith("https://")) {
+        const imageRes = await fetch(image);
+        const arrayBuffer = await imageRes.arrayBuffer();
+        base64Data = Buffer.from(arrayBuffer).toString("base64");
+        mimeType = imageRes.headers.get("content-type") || "image/jpeg";
+      } else if (image.includes(";base64,")) {
         const parts = image.split(";base64,");
         mimeType = parts[0].replace("data:", "");
         base64Data = parts[1];
@@ -48,22 +127,24 @@ async function startServer() {
       const ai = getGeminiClient();
 
       const systemInstruction = `คุณคือวิศวกรสิ่งแวดล้อมและผู้เชี่ยวชาญด้านระบบการคัดแยกขยะ อิงตามมาตรฐานคู่มือการคัดแยกขยะมูลฝอย 4 สีของ "กรมควบคุมมลพิษ (คพ.) กระทรวงทรัพยากรธรรมชาติและสิ่งแวดล้อม" ร่วมกับข้อมูลวิชาการจาก "องค์การบริหารจัดการก๊าซเรือนกระจก (อบก.)" และเกณฑ์ราคารับซื้อของเก่าตลาดไทย (สมาคมซาเล้งและร้านรับซื้อของเก่า/วงษ์พาณิชย์)
-หน้าที่ของคุณคือวิเคราะห์รูปภาพขยะที่ส่งมาอย่างละเอียด ระบุวัตถุและชิ้นส่วนย่อย (เช่น แยกตัวขวด ฝา ฉลาก) จัดหมวดหมู่เข้าถังขยะ 4 สีมาตรฐานของไทย ให้ขั้นตอนการเตรียมขยะ และคำนวณผลกระทบ CO2
 
-หมวดหมู่ถังขยะมาตรฐานประเทศไทย 4 สี (กรมควบคุมมลพิษ):
-1. recyclable (ขยะรีไซเคิล): สีเหลือง (#EAB308) - เช่น ขวดพลาสติก PET/HDPE, กระป๋องอลูมิเนียม, กล่องกระดาษ, ขวดแก้ว, โลหะ
-2. organic (ขยะอินทรีย์ / ขยะย่อยสลาย): สีเขียว (#16A34A) - เช่น เศษอาหาร, เปลือกผลไม้, เศษผัก, เศษใบไม้, ซากพืช
-3. general (ขยะทั่วไป): สีน้ำเงิน (#2563EB) - เช่น ถุงพลาสติกเปื้อนอาหาร, ซองขนมขบเคี้ยว, ซองบะหมี่, กล่องโฟมเปื้อน, กระดาษทิชชู่ใช้แล้ว
-4. hazardous (ขยะอันตราย): สีส้ม/สีแดง (#DC2626) - เช่น ถ่านไฟฉาย, หลอดไฟ, กระป๋องสเปรย์, ขวดยาพ่น, สารเคมี, แบตเตอรี่ รวมถึงขยะอิเล็กทรอนิกส์ (E-Waste) ทุกชนิด
-
-ข้อห้ามสำคัญ: ห้ามเอ่ยถึงชื่อ AI หรือโมเดลใดๆ เช่น Gemini ในคำตอบ ให้ตอบในฐานะระบบผู้เชี่ยวชาญสิ่งแวดล้อม และอ้างอิงมาตรฐานจากกรมควบคุมมลพิษ (คพ.) เสมอ`;
+กฎเหล็กในการตรวจจับวัตถุและวิเคราะห์ภาพถ่าย:
+1. ตรวจจับสิ่งของ วัตถุ บรรจุภัณฑ์ อาหาร หรืออุปกรณ์ที่ปรากฏในภาพถ่ายอย่างแม่นยำเสมอ โดยเฉพาะสิ่งที่อยู่บริเวณกึ่งกลางภาพหรือที่ผู้ใช้กำลังถืออยู่
+2. ห้ามปฏิเสธหรือตอบว่า "ไม่พบขยะ" / "ไม่พบวัตถุ" เด็ดขาด! ไม่ว่าสิ่งนั้นจะเป็นขวดน้ำดื่ม แก้วกาแฟ ถุงพลาสติก ซองขนม กล่องพัสดุ กระป๋อง ปากกา สมุด เสื้อผ้า อาหาร ผลไม้ โทรศัพท์มือถือ สายชาร์จ หรือของใช้ประจำวัน ให้ระบุชื่อวัตถุนั้นตามจริง และแนะนำขั้นตอนการคัดแยกทิ้งลงถัง 4 สีเมื่อกลายเป็นขยะ
+3. หากในภาพมีหลายวัตถุหรือมีฉากหลัง ให้เลือกวัตถุที่เป็นจุดสนใจหลัก (Focus) หรืออยู่ตรงกลางเฟรมที่สุด
+4. หากภาพถ่ายมัว แสงน้อย หรือมีแสงสะท้อน ให้วิเคราะห์จากรูปทรง สี และเนื้อวัสดุที่น่าจะเป็นไปได้มากที่สุด แล้วแนะนำถังขยะที่ถูกต้องและปลอดภัยที่สุด
+5. หมวดหมู่ถังขยะมาตรฐานประเทศไทย 4 สี (กรมควบคุมมลพิษ):
+   - recyclable (ขยะรีไซเคิล): สีเหลือง (#EAB308) เช่น ขวดพลาสติก PET/HDPE, กระป๋องอลูมิเนียม/โลหะ, กล่องกระดาษ, ขวดแก้ว
+   - organic (ขยะอินทรีย์ / ขยะย่อยสลาย): สีเขียว (#16A34A) เช่น เศษอาหาร, เปลือกผลไม้, เศษผัก, เศษใบไม้, ซากพืช
+   - general (ขยะทั่วไป): สีน้ำเงิน (#2563EB) เช่น ถุงพลาสติกเปื้อนอาหาร, ซองขนมขบเคี้ยว, ซองบะหมี่, กล่องโฟมเปื้อน, ทิชชู่ใช้แล้ว
+   - hazardous (ขยะอันตราย): สีส้ม/สีแดง (#DC2626) เช่น ถ่านไฟฉาย, หลอดไฟ, กระป๋องสเปรย์, สารเคมี, แบตเตอรี่ รวมถึงขยะอิเล็กทรอนิกส์ (E-Waste) ทุกชนิด
+6. ข้อห้ามเด็ดขาด: ห้ามเอ่ยถึงชื่อ AI หรือโมเดลใดๆ เช่น Gemini ในคำตอบ ให้ตอบในฐานะระบบผู้เชี่ยวชาญสิ่งแวดล้อม และอ้างอิงมาตรฐานจากกรมควบคุมมลพิษ (คพ.) เสมอ`;
 
       const prompt = userPrompt
-        ? `ระบุชนิดขยะในภาพนี้อย่างละเอียด และตอบคำถามเพิ่มเติม: "${userPrompt}"`
-        : "จำแนกชนิดขยะในภาพนี้ บอกประเภทถังขยะ สีถังขยะตามมาตรฐาน 4 สี วิธีคัดแยกทีละขั้นตอน การแยกชิ้นส่วนย่อย (ถ้ามี) การคำนวณลดก๊าซคาร์บอน CO2 และไอเดีย DIY";
+        ? `ตรวจจับวัตถุในภาพนี้อย่างละเอียด และตอบคำถามเพิ่มเติม: "${userPrompt}"`
+        : "ตรวจจับและระบุชนิดวัตถุ บรรจุภัณฑ์ หรือสิ่งของที่เด่นชัดที่สุดในภาพนี้ บอกประเภทถังขยะตามมาตรฐาน 4 สีของกรมควบคุมมลพิษ (เขียว/เหลือง/น้ำเงิน/ส้ม-แดง) พร้อมขั้นตอนการแยกชิ้นส่วนย่อย การล้างทำความสะอาด การคำนวณลดก๊าซคาร์บอน CO2 และไอเดีย DIY";
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3.8-flash",
+      const response = await generateContentWithFallback(ai, {
         contents: {
           parts: [
             {
@@ -172,16 +253,54 @@ async function startServer() {
 
       const responseText = response.text;
       if (!responseText) {
-        throw new Error("ไม่ได้รับข้อมูลการวิเคราะห์จาก AI");
+        throw new Error("ไม่ได้รับข้อมูลการวิเคราะห์จากระบบ AI กรุณาลองใหม่อีกครั้ง");
       }
 
-      const result = JSON.parse(responseText);
+      let cleaned = responseText.trim();
+      if (cleaned.startsWith("```json")) {
+        cleaned = cleaned.replace(/^```json/, "").replace(/```$/, "").trim();
+      } else if (cleaned.startsWith("```")) {
+        cleaned = cleaned.replace(/^```/, "").replace(/```$/, "").trim();
+      }
+
+      const result = JSON.parse(cleaned);
+
+      // Normalize Category Key according to official 4-color standard
+      if (!result.categoryKey || !["recyclable", "organic", "general", "hazardous"].includes(result.categoryKey)) {
+        const textToMatch = `${result.categoryName || ""} ${result.binColor || ""} ${result.itemName || ""}`.toLowerCase();
+        if (textToMatch.includes("รีไซเคิล") || textToMatch.includes("เหลือง") || textToMatch.includes("recycl")) {
+          result.categoryKey = "recyclable";
+          result.binColor = result.binColor || "ถังสีเหลือง";
+          result.categoryName = result.categoryName || "ขยะรีไซเคิล";
+        } else if (textToMatch.includes("อินทรีย์") || textToMatch.includes("ย่อยสลาย") || textToMatch.includes("เขียว") || textToMatch.includes("organ")) {
+          result.categoryKey = "organic";
+          result.binColor = result.binColor || "ถังสีเขียว";
+          result.categoryName = result.categoryName || "ขยะอินทรีย์";
+        } else if (textToMatch.includes("อันตราย") || textToMatch.includes("แดง") || textToMatch.includes("ส้ม") || textToMatch.includes("hazard") || textToMatch.includes("อิเล็ก")) {
+          result.categoryKey = "hazardous";
+          result.binColor = result.binColor || "ถังสีส้ม/แดง";
+          result.categoryName = result.categoryName || "ขยะอันตราย";
+        } else {
+          result.categoryKey = "general";
+          result.binColor = result.binColor || "ถังสีน้ำเงิน";
+          result.categoryName = result.categoryName || "ขยะทั่วไป";
+        }
+      }
+
+      const standardHex: Record<string, string> = {
+        recyclable: "#EAB308",
+        organic: "#16A34A",
+        general: "#2563EB",
+        hazardous: "#DC2626",
+      };
+      result.binHexColor = standardHex[result.categoryKey] || "#2563EB";
+
       return res.json({ success: true, data: result });
     } catch (error: any) {
       console.error("Error analyzing waste image:", error);
       return res.status(500).json({
         success: false,
-        error: error.message || "เกิดข้อผิดพลาดในการวิเคราะห์ขยะ กรุณาลองใหม่อีกครั้ง",
+        error: formatThaiErrorMessage(error),
       });
     }
   });
@@ -206,8 +325,7 @@ async function startServer() {
         ? `บริบทขยะที่ผู้ใช้กำลังดูอยู่: ${JSON.stringify(contextItem)}\nคำถามของผู้ใช้: "${message}"`
         : `คำถามของผู้ใช้: "${message}"`;
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3.8-flash",
+      const response = await generateContentWithFallback(ai, {
         contents: promptContext,
         config: {
           systemInstruction,
@@ -222,7 +340,7 @@ async function startServer() {
       console.error("Chat advisor error:", error);
       return res.status(500).json({
         success: false,
-        error: error.message || "เกิดข้อผิดพลาดในการตอบคำถาม",
+        error: formatThaiErrorMessage(error),
       });
     }
   });

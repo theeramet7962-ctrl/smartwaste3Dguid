@@ -72,7 +72,28 @@ export default function App() {
       sound.playSuccess();
     } catch (err: any) {
       console.error('Analysis error:', err);
-      setError(err.message || 'ไม่สามารถติดต่อระบบวิเคราะห์ได้ โปรดลองอีกครั้ง');
+      let rawMsg = err.message || 'ไม่สามารถติดต่อระบบวิเคราะห์ได้ โปรดลองอีกครั้ง';
+      try {
+        if (rawMsg.includes('{') && rawMsg.includes('}')) {
+          const match = rawMsg.match(/\{[\s\S]*\}/);
+          if (match) {
+            const parsed = JSON.parse(match[0]);
+            if (
+              parsed?.error?.code === 503 ||
+              parsed?.error?.status === 'UNAVAILABLE' ||
+              parsed?.error?.message?.includes('high demand')
+            ) {
+              rawMsg = 'ขณะนี้ระบบ AI มีผู้ใช้งานจำนวนมากชั่วคราว (High Demand) กรุณากดปุ่มลองใหม่อีกครั้ง';
+            } else if (parsed?.error?.message) {
+              rawMsg = parsed.error.message;
+            }
+          }
+        }
+      } catch {}
+      if (rawMsg.includes('503') || rawMsg.includes('high demand') || rawMsg.includes('UNAVAILABLE')) {
+        rawMsg = 'ขณะนี้ระบบ AI มีผู้ใช้งานจำนวนมากชั่วคราว (High Demand) กรุณากดปุ่มลองใหม่อีกครั้ง';
+      }
+      setError(rawMsg);
     } finally {
       setIsAnalyzing(false);
     }

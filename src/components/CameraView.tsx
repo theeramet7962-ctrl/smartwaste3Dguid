@@ -10,7 +10,8 @@ import {
   HelpCircle,
   Zap,
   Scan,
-  Crosshair
+  Crosshair,
+  Eye
 } from 'lucide-react';
 
 interface CameraViewProps {
@@ -37,6 +38,37 @@ export const CameraView: React.FC<CameraViewProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const cleanErrorMessage = (rawError: string | null) => {
+    if (!rawError) return '';
+    try {
+      if (rawError.includes('{') && rawError.includes('}')) {
+        const match = rawError.match(/\{[\s\S]*\}/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          if (
+            parsed?.error?.code === 503 ||
+            parsed?.error?.status === 'UNAVAILABLE' ||
+            parsed?.error?.message?.includes('high demand')
+          ) {
+            return 'ขณะนี้ระบบ AI มีผู้ใช้งานจำนวนมากชั่วคราว (High Demand) ระบบรองรับการลองสแกนซ้ำอัตโนมัติ กรุณากดปุ่ม "ลองใหม่อีกครั้ง"';
+          }
+          if (parsed?.error?.code === 429 || parsed?.error?.status === 'RESOURCE_EXHAUSTED') {
+            return 'โควตาการเรียกใช้งานระบบชั่วคราวหนาแน่น กรุณารอสักครู่แล้วกดลองใหม่';
+          }
+          if (parsed?.error?.message) {
+            return parsed.error.message;
+          }
+        }
+      }
+    } catch {}
+
+    if (rawError.includes('503') || rawError.includes('high demand') || rawError.includes('UNAVAILABLE')) {
+      return 'ขณะนี้ระบบ AI มีผู้ใช้งานจำนวนมากชั่วคราว (High Demand) กรุณากดปุ่ม "ลองใหม่อีกครั้ง"';
+    }
+
+    return rawError;
+  };
 
   // Cycling loading message phrases
   const loadingMessages = [
@@ -110,21 +142,34 @@ export const CameraView: React.FC<CameraViewProps> = ({
   }, [facingMode, cameraActive, startCamera]);
 
   // Capture Photo from Camera
-  const capturePhoto = () => {
+  const capturePhoto = (autoScan = true) => {
     if (!videoRef.current || !canvasRef.current) return;
+    const video = videoRef.current;
+
+    if (video.videoWidth === 0 || video.videoHeight === 0 || video.readyState < 2) {
+      setCameraError('กล้องกำลังเริ่มต้นการส่งสัญญาณภาพ กรุณารอ 1 วินาทีแล้วลองกดถ่ายอีกครั้ง');
+      return;
+    }
+
     sound.playShutter();
 
-    const video = videoRef.current;
     const canvas = canvasRef.current;
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
+    const width = video.videoWidth || 1280;
+    const height = video.videoHeight || 720;
+    canvas.width = width;
+    canvas.height = height;
 
     const ctx = canvas.getContext('2d');
     if (ctx) {
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
+      ctx.drawImage(video, 0, 0, width, height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
       setSelectedImage(dataUrl);
       stopCamera();
+      clearError();
+
+      if (autoScan) {
+        onAnalyzeImage(dataUrl, userPrompt.trim() || undefined);
+      }
     }
   };
 
@@ -145,6 +190,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
       setSelectedImage(dataUrl);
       stopCamera();
       clearError();
+      onAnalyzeImage(dataUrl, userPrompt.trim() || undefined);
     };
     reader.readAsDataURL(file);
   };
@@ -330,22 +376,30 @@ export const CameraView: React.FC<CameraViewProps> = ({
 
         {/* Action Controls for Active Camera */}
         {cameraActive && (
-          <div className="mt-4 flex items-center justify-center gap-4">
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
             <button
               type="button"
               onClick={stopCamera}
-              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+              className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl transition-colors cursor-pointer"
             >
               ยกเลิก
             </button>
             <button
+              type="button"
+              onClick={() => capturePhoto(false)}
+              className="flex items-center gap-1.5 px-4 py-2.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>ถ่ายเพื่อดูรูปก่อน</span>
+            </button>
+            <button
               id="btn-capture-photo"
               type="button"
-              onClick={capturePhoto}
+              onClick={() => capturePhoto(true)}
               className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold text-sm rounded-2xl shadow-lg shadow-emerald-500/30 active:scale-95 transition-all cursor-pointer"
             >
               <Zap className="w-4 h-4 fill-white text-emerald-600" />
-              <span>ถ่ายภาพวิเคราะห์ทันที</span>
+              <span>ถ่ายภาพและสแกนทันที</span>
             </button>
           </div>
         )}
@@ -373,13 +427,13 @@ export const CameraView: React.FC<CameraViewProps> = ({
               />
             </div>
 
-            <div className="flex items-center justify-end gap-3">
+            <div className="flex items-center justify-between gap-3">
               <button
                 type="button"
                 onClick={handleReset}
                 className="px-4 py-2.5 text-xs font-semibold text-slate-600 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
               >
-                เลือกรูปใหม่
+                เลือกรูปใหม่ / ถ่ายใหม่
               </button>
               <button
                 id="btn-start-analyze"
@@ -388,7 +442,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
                 className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold text-xs rounded-xl shadow-md shadow-emerald-600/25 active:scale-95 transition-all cursor-pointer"
               >
                 <Sparkles className="w-4 h-4" />
-                <span>วิเคราะห์ด้วย AI</span>
+                <span>กดเริ่มสแกนจำแนกวัตถุ</span>
               </button>
             </div>
           </div>
@@ -396,18 +450,37 @@ export const CameraView: React.FC<CameraViewProps> = ({
 
         {/* General Error Banner */}
         {error && (
-          <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-2xl flex items-start justify-between gap-3 text-xs text-red-700">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
-              <span>{error}</span>
+          <div className="mt-4 p-4 bg-amber-50/90 border border-amber-300/80 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-amber-900 shadow-sm">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-amber-900 text-sm">การสแกนขัดข้องชั่วคราว</p>
+                <p className="text-amber-800 mt-0.5 font-medium">{cleanErrorMessage(error)}</p>
+                <p className="mt-1 text-slate-500 text-[11px]">
+                  💡 ระบบมีระบบสลับโมเดลสำรองอัตโนมัติ หากเซิร์ฟเวอร์มีผู้ใช้งานหนาแน่น ให้กดปุ่ม "ลองใหม่อีกครั้ง"
+                </p>
+              </div>
             </div>
-            <button
-              type="button"
-              onClick={clearError}
-              className="text-red-500 hover:text-red-700 font-bold shrink-0 underline cursor-pointer"
-            >
-              ปิด
-            </button>
+            <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+              {selectedImage && (
+                <button
+                  type="button"
+                  onClick={handleAnalyze}
+                  disabled={isAnalyzing}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow-sm transition-all cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isAnalyzing ? 'animate-spin' : ''}`} />
+                  <span>ลองใหม่อีกครั้ง</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={clearError}
+                className="px-3 py-2 text-slate-600 hover:text-slate-900 hover:bg-slate-200/50 rounded-xl font-medium transition-colors cursor-pointer text-xs"
+              >
+                ปิด
+              </button>
+            </div>
           </div>
         )}
       </div>
