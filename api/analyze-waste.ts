@@ -39,6 +39,10 @@ const formatThaiErrorMessage = (err: any): string => {
     return 'ขณะนี้ระบบ AI มีผู้ใช้งานจำนวนมากชั่วคราว (High Demand) กรุณากดปุ่มลองใหม่อีกครั้ง';
   }
 
+  if (raw.includes('GEMINI_API_KEY') || raw.includes('API key not valid') || raw.includes('API_KEY_INVALID')) {
+    return 'ยังไม่ได้ตั้งค่า GEMINI_API_KEY: โปรดไปที่เมนู Settings (รูปฟันเฟือง ⚙️) ด้านบนขวา > Secrets เพื่อใส่ GEMINI_API_KEY หรือใส่ในไฟล์ .env';
+  }
+
   return raw;
 };
 
@@ -52,7 +56,10 @@ export default async function handler(req: RequestLike, res: ResponseLike) {
     const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey) {
-      return res.status(500).json({ success: false, error: 'GEMINI_API_KEY is not configured' });
+      return res.status(500).json({
+        success: false,
+        error: 'ยังไม่ได้ตั้งค่า GEMINI_API_KEY: โปรดไปที่เมนู Settings (รูปฟันเฟือง ⚙️) ด้านบนขวา > Secrets เพื่อใส่ GEMINI_API_KEY หรือใส่ในไฟล์ .env',
+      });
     }
 
     if (!image) {

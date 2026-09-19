@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import path from "path";
 import { GoogleGenAI, Type } from "@google/genai";
@@ -53,6 +54,10 @@ async function startServer() {
 
     if (raw.includes("503") || raw.includes("high demand") || raw.includes("UNAVAILABLE")) {
       return "ขณะนี้ระบบ AI มีผู้ใช้งานจำนวนมากชั่วคราว (High Demand) กรุณากดปุ่ม 'ลองใหม่อีกครั้ง'";
+    }
+
+    if (raw.includes("GEMINI_API_KEY") || raw.includes("API key not valid") || raw.includes("API_KEY_INVALID")) {
+      return "ยังไม่ได้ตั้งค่า GEMINI_API_KEY: โปรดไปที่เมนู Settings (รูปฟันเฟือง ⚙️) ด้านบนขวา > Secrets เพื่อใส่ GEMINI_API_KEY หรือใส่ในไฟล์ .env";
     }
 
     return raw;

@@ -67,6 +67,10 @@ export const CameraView: React.FC<CameraViewProps> = ({
       return 'ขณะนี้ระบบ AI มีผู้ใช้งานจำนวนมากชั่วคราว (High Demand) กรุณากดปุ่ม "ลองใหม่อีกครั้ง"';
     }
 
+    if (rawError.includes('GEMINI_API_KEY') || rawError.includes('API key not valid') || rawError.includes('API_KEY_INVALID')) {
+      return 'ยังไม่ได้ตั้งค่า GEMINI_API_KEY ในระบบ Google AI Studio';
+    }
+
     return rawError;
   };
 
@@ -451,14 +455,28 @@ export const CameraView: React.FC<CameraViewProps> = ({
         {/* General Error Banner */}
         {error && (
           <div className="mt-4 p-4 bg-amber-50/90 border border-amber-300/80 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-amber-900 shadow-sm">
-            <div className="flex items-start gap-2.5">
+            <div className="flex items-start gap-2.5 flex-1">
               <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-              <div>
+              <div className="flex-1">
                 <p className="font-bold text-amber-900 text-sm">การสแกนขัดข้องชั่วคราว</p>
                 <p className="text-amber-800 mt-0.5 font-medium">{cleanErrorMessage(error)}</p>
-                <p className="mt-1 text-slate-500 text-[11px]">
-                  💡 ระบบมีระบบสลับโมเดลสำรองอัตโนมัติ หากเซิร์ฟเวอร์มีผู้ใช้งานหนาแน่น ให้กดปุ่ม "ลองใหม่อีกครั้ง"
-                </p>
+                {error.includes('GEMINI_API_KEY') || error.includes('API_KEY') ? (
+                  <div className="mt-2.5 p-3 bg-amber-100/70 rounded-xl border border-amber-300/60 text-amber-950 space-y-1.5">
+                    <p className="font-bold text-xs flex items-center gap-1.5">
+                      <span>🔑</span> วิธีแก้ไข: ตั้งค่า GEMINI_API_KEY ใน Google AI Studio
+                    </p>
+                    <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-700 pl-0.5">
+                      <li>คลิกที่ปุ่ม <strong>Settings</strong> (ไอคอนรูปฟันเฟือง ⚙️) ที่แถบเมนูด้านบน</li>
+                      <li>เลือกหัวข้อ <strong>Secrets</strong></li>
+                      <li>เพิ่มตัวแปรชื่อ <code className="bg-amber-200/80 text-amber-900 px-1 py-0.5 rounded font-mono font-bold">GEMINI_API_KEY</code> แล้วใส่ API Key</li>
+                      <li>เมื่อตั้งค่าเสร็จแล้ว สามารถกดปุ่ม <strong>"ลองใหม่อีกครั้ง"</strong> เพื่อวิเคราะห์ต่อได้ทันที</li>
+                    </ol>
+                  </div>
+                ) : (
+                  <p className="mt-1 text-slate-500 text-[11px]">
+                    💡 ระบบมีระบบสลับโมเดลสำรองอัตโนมัติ หากเซิร์ฟเวอร์มีผู้ใช้งานหนาแน่น ให้กดปุ่ม "ลองใหม่อีกครั้ง"
+                  </p>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-2 self-end sm:self-center shrink-0">

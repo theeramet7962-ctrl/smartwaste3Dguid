@@ -93,6 +93,9 @@ export default function App() {
       if (rawMsg.includes('503') || rawMsg.includes('high demand') || rawMsg.includes('UNAVAILABLE')) {
         rawMsg = 'ขณะนี้ระบบ AI มีผู้ใช้งานจำนวนมากชั่วคราว (High Demand) กรุณากดปุ่มลองใหม่อีกครั้ง';
       }
+      if (rawMsg.includes('GEMINI_API_KEY') || rawMsg.includes('API key not valid') || rawMsg.includes('API_KEY_INVALID')) {
+        rawMsg = 'ยังไม่ได้ตั้งค่า GEMINI_API_KEY: โปรดไปที่เมนู Settings (รูปฟันเฟือง ⚙️) > Secrets เพื่อใส่ GEMINI_API_KEY หรือใส่ในไฟล์ .env';
+      }
       setError(rawMsg);
     } finally {
       setIsAnalyzing(false);
