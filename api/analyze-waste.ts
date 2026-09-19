@@ -3,12 +3,84 @@ import { GoogleGenAI, Type } from '@google/genai';
 interface RequestLike {
   method?: string;
   body?: any;
+  on?: (event: string, callback: (...args: any[]) => void) => any;
 }
 
 interface ResponseLike {
-  status: (code: number) => {
+  status?: (code: number) => {
     json: (data: any) => any;
+    end: () => any;
   };
+  statusCode?: number;
+  setHeader?: (name: string, value: string) => any;
+  end?: (data?: any) => any;
+  json?: (data: any) => any;
+}
+
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '10mb',
+    },
+  },
+  maxDuration: 60,
+};
+
+// Helper to safely send JSON response in any Node/Vercel/Express environment
+function sendResponse(res: any, status: number, data: any) {
+  try {
+    res.setHeader?.('Access-Control-Allow-Credentials', 'true');
+    res.setHeader?.('Access-Control-Allow-Origin', '*');
+    res.setHeader?.('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+    res.setHeader?.(
+      'Access-Control-Allow-Headers',
+      'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
+    );
+  } catch {}
+
+  if (typeof res.status === 'function') {
+    return res.status(status).json(data);
+  }
+  if (typeof res.json === 'function') {
+    res.statusCode = status;
+    return res.json(data);
+  }
+  res.statusCode = status;
+  res.setHeader?.('Content-Type', 'application/json');
+  return res.end?.(JSON.stringify(data));
+}
+
+// Helper to parse body safely from JSON, string, or stream
+async function parseRequestBody(req: any): Promise<any> {
+  if (req.body) {
+    if (typeof req.body === 'string') {
+      try {
+        return JSON.parse(req.body);
+      } catch {
+        return {};
+      }
+    }
+    return req.body;
+  }
+
+  if (typeof req.on === 'function') {
+    return new Promise((resolve) => {
+      let data = '';
+      req.on('data', (chunk: any) => {
+        data += chunk;
+      });
+      req.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch {
+          resolve({});
+        }
+      });
+      req.on('error', () => resolve({}));
+    });
+  }
+
+  return {};
 }
 
 // Helper for friendly Thai error messages
@@ -40,30 +112,53 @@ const formatThaiErrorMessage = (err: any): string => {
   }
 
   if (raw.includes('GEMINI_API_KEY') || raw.includes('API key not valid') || raw.includes('API_KEY_INVALID')) {
-    return 'ยังไม่ได้ตั้งค่า GEMINI_API_KEY: โปรดไปที่เมนู Settings (รูปฟันเฟือง ⚙️) ด้านบนขวา > Secrets เพื่อใส่ GEMINI_API_KEY หรือใส่ในไฟล์ .env';
+    return 'ยังไม่ได้ตั้งค่า GEMINI_API_KEY: หากใช้บน Vercel ให้ไปที่ Project Settings > Environment Variables แล้วเพิ่ม GEMINI_API_KEY';
   }
 
   return raw;
 };
 
 export default async function handler(req: RequestLike, res: ResponseLike) {
+  // Handle CORS Preflight
+  if (req.method === 'OPTIONS') {
+    try {
+      res.setHeader?.('Access-Control-Allow-Origin', '*');
+      res.setHeader?.('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+      res.setHeader?.(
+        'Access-Control-Allow-Headers',
+        'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
+      );
+    } catch {}
+    if (typeof res.status === 'function') {
+      return res.status(200).end();
+    }
+    if (res.statusCode) res.statusCode = 200;
+    return res.end?.();
+  }
+
   if (req.method !== 'POST') {
-    return res.status(405).json({ success: false, error: 'Method Not Allowed' });
+    return sendResponse(res, 405, { success: false, error: 'Method Not Allowed' });
   }
 
   try {
-    const { image, userPrompt } = req.body || {};
-    const apiKey = process.env.GEMINI_API_KEY;
+    const body = await parseRequestBody(req);
+    const { image, userPrompt } = body || {};
+    const apiKey =
+      process.env.GEMINI_API_KEY ||
+      process.env.VITE_GEMINI_API_KEY ||
+      process.env.API_KEY ||
+      process.env.GOOGLE_API_KEY;
 
     if (!apiKey) {
-      return res.status(500).json({
+      return sendResponse(res, 500, {
         success: false,
-        error: 'ยังไม่ได้ตั้งค่า GEMINI_API_KEY: โปรดไปที่เมนู Settings (รูปฟันเฟือง ⚙️) ด้านบนขวา > Secrets เพื่อใส่ GEMINI_API_KEY หรือใส่ในไฟล์ .env',
+        error:
+          'ยังไม่ได้ตั้งค่า GEMINI_API_KEY ในระบบ: หากใช้งานบน Vercel ให้ไปที่เมนู Project Settings > Environment Variables แล้วเพิ่มคีย์ GEMINI_API_KEY',
       });
     }
 
     if (!image) {
-      return res.status(400).json({ success: false, error: 'โปรดระบุรูปภาพเพื่อทำการวิเคราะห์' });
+      return sendResponse(res, 400, { success: false, error: 'โปรดระบุรูปภาพเพื่อทำการวิเคราะห์' });
     }
 
     let base64Data = image;
@@ -271,10 +366,10 @@ export default async function handler(req: RequestLike, res: ResponseLike) {
     };
     result.binHexColor = standardHex[result.categoryKey] || '#2563EB';
 
-    return res.status(200).json({ success: true, data: result });
+    return sendResponse(res, 200, { success: true, data: result });
   } catch (error: any) {
     console.error('Error analyzing waste image:', error);
-    return res.status(500).json({
+    return sendResponse(res, 500, {
       success: false,
       error: formatThaiErrorMessage(error),
     });

@@ -21,6 +21,37 @@ interface CameraViewProps {
   clearError: () => void;
 }
 
+// Compress image to ensure payload stays well under serverless 4.5MB limits
+const optimizeImage = (dataUrl: string, maxDim = 1280, quality = 0.85): Promise<string> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        if (width > height) {
+          height = Math.round((height * maxDim) / width);
+          width = maxDim;
+        } else {
+          width = Math.round((width * maxDim) / height);
+          height = maxDim;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(dataUrl);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+};
+
 export const CameraView: React.FC<CameraViewProps> = ({
   onAnalyzeImage,
   isAnalyzing,
@@ -166,7 +197,7 @@ export const CameraView: React.FC<CameraViewProps> = ({
     const ctx = canvas.getContext('2d');
     if (ctx) {
       ctx.drawImage(video, 0, 0, width, height);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
       setSelectedImage(dataUrl);
       stopCamera();
       clearError();
@@ -189,12 +220,13 @@ export const CameraView: React.FC<CameraViewProps> = ({
 
     sound.playPop();
     const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      setSelectedImage(dataUrl);
+    reader.onload = async (event) => {
+      const rawDataUrl = event.target?.result as string;
+      const optimized = await optimizeImage(rawDataUrl);
+      setSelectedImage(optimized);
       stopCamera();
       clearError();
-      onAnalyzeImage(dataUrl, userPrompt.trim() || undefined);
+      onAnalyzeImage(optimized, userPrompt.trim() || undefined);
     };
     reader.readAsDataURL(file);
   };
@@ -208,9 +240,10 @@ export const CameraView: React.FC<CameraViewProps> = ({
 
     sound.playPop();
     const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      setSelectedImage(dataUrl);
+    reader.onload = async (event) => {
+      const rawDataUrl = event.target?.result as string;
+      const optimized = await optimizeImage(rawDataUrl);
+      setSelectedImage(optimized);
       stopCamera();
       clearError();
     };
@@ -461,16 +494,26 @@ export const CameraView: React.FC<CameraViewProps> = ({
                 <p className="font-bold text-amber-900 text-sm">การสแกนขัดข้องชั่วคราว</p>
                 <p className="text-amber-800 mt-0.5 font-medium">{cleanErrorMessage(error)}</p>
                 {error.includes('GEMINI_API_KEY') || error.includes('API_KEY') ? (
-                  <div className="mt-2.5 p-3 bg-amber-100/70 rounded-xl border border-amber-300/60 text-amber-950 space-y-1.5">
+                  <div className="mt-2.5 p-3 bg-amber-100/70 rounded-xl border border-amber-300/60 text-amber-950 space-y-2">
                     <p className="font-bold text-xs flex items-center gap-1.5">
-                      <span>🔑</span> วิธีแก้ไข: ตั้งค่า GEMINI_API_KEY ใน Google AI Studio
+                      <span>🔑</span> วิธีแก้ไข: ตั้งค่า GEMINI_API_KEY
                     </p>
-                    <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-700 pl-0.5">
-                      <li>คลิกที่ปุ่ม <strong>Settings</strong> (ไอคอนรูปฟันเฟือง ⚙️) ที่แถบเมนูด้านบน</li>
-                      <li>เลือกหัวข้อ <strong>Secrets</strong></li>
-                      <li>เพิ่มตัวแปรชื่อ <code className="bg-amber-200/80 text-amber-900 px-1 py-0.5 rounded font-mono font-bold">GEMINI_API_KEY</code> แล้วใส่ API Key</li>
-                      <li>เมื่อตั้งค่าเสร็จแล้ว สามารถกดปุ่ม <strong>"ลองใหม่อีกครั้ง"</strong> เพื่อวิเคราะห์ต่อได้ทันที</li>
-                    </ol>
+                    <div className="space-y-1.5 text-[11px] text-slate-700">
+                      <div>
+                        <strong className="text-amber-900 font-semibold">▲ สำหรับการ Deploy บน Vercel:</strong>
+                        <ol className="list-decimal list-inside pl-1 space-y-0.5 mt-0.5 text-slate-600">
+                          <li>เปิดหน้า Project Dashboard บน Vercel &gt; ไปที่แท็บ <strong>Settings</strong> &gt; <strong>Environment Variables</strong></li>
+                          <li>เพิ่ม Key: <code className="bg-amber-200/80 text-amber-900 px-1 py-0.5 rounded font-mono font-bold">GEMINI_API_KEY</code></li>
+                          <li>วาง API Key แล้วกด <strong>Save</strong> จากนั้นสั่ง <strong>Redeploy</strong> 1 ครั้ง</li>
+                        </ol>
+                      </div>
+                      <div className="pt-1 border-t border-amber-200/80">
+                        <strong className="text-amber-900 font-semibold">⚙️ สำหรับการทดสอบใน Google AI Studio:</strong>
+                        <p className="text-slate-600 pl-1 mt-0.5">
+                          คลิกเมนู <strong>Settings (รูปฟันเฟือง ⚙️)</strong> ด้านบน &gt; <strong>Secrets</strong> &gt; เพิ่ม <code className="bg-amber-200/80 text-amber-900 px-1 py-0.5 rounded font-mono font-bold">GEMINI_API_KEY</code>
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 ) : (
                   <p className="mt-1 text-slate-500 text-[11px]">

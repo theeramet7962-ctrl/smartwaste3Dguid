@@ -10,6 +10,7 @@ import { EcoAdvisorModal } from './components/EcoAdvisorModal';
 import { WasteAnalysisResult, ScanHistoryItem } from './types';
 import { sound } from './utils/audio';
 import { Leaf, Bot } from 'lucide-react';
+import { analyzeWasteClientFallback } from './utils/geminiClientFallback';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabType>('scan');
@@ -48,28 +49,62 @@ export default function App() {
     setError(null);
 
     try {
-      const response = await fetch('/api/analyze-waste', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          image: imageDataUrl,
-          userPrompt,
-        }),
-      });
+      let analysisResult: WasteAnalysisResult | null = null;
 
-      const data = await response.json();
+      try {
+        const response = await fetch('/api/analyze-waste', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            image: imageDataUrl,
+            userPrompt,
+          }),
+        });
 
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || 'เกิดข้อผิดพลาดในการวิเคราะห์รูปภาพขยะ');
+        const contentType = response.headers.get('content-type') || '';
+        let data: any = null;
+        if (contentType.includes('application/json')) {
+          data = await response.json();
+        } else {
+          const text = await response.text();
+          try {
+            data = JSON.parse(text);
+          } catch {
+            if (response.status === 413) {
+              throw new Error('รูปภาพมีขนาดใหญ่เกินกว่าที่เซิร์ฟเวอร์กำหนด กรุณาถ่ายใหม่');
+            }
+            if (response.status === 404) {
+              throw new Error('SERVERLESS_404');
+            }
+            throw new Error(text.slice(0, 120) || 'เซิร์ฟเวอร์ตอบกลับไม่ถูกต้อง');
+          }
+        }
+
+        if (!response.ok || !data?.success) {
+          throw new Error(data?.error || 'เกิดข้อผิดพลาดในการวิเคราะห์รูปภาพขยะ');
+        }
+
+        analysisResult = data.data;
+      } catch (serverErr: any) {
+        // If serverless route is not reachable on Vercel and a client key is available
+        const clientKey = (import.meta as any).env?.VITE_GEMINI_API_KEY || (import.meta as any).env?.GEMINI_API_KEY;
+        if (clientKey) {
+          console.warn('API endpoint unavailable, running client fallback:', serverErr);
+          analysisResult = await analyzeWasteClientFallback(imageDataUrl, userPrompt);
+        } else {
+          throw serverErr;
+        }
       }
 
-      setCurrentAnalysis({
-        result: data.data,
-        image: imageDataUrl,
-      });
-      sound.playSuccess();
+      if (analysisResult) {
+        setCurrentAnalysis({
+          result: analysisResult,
+          image: imageDataUrl,
+        });
+        sound.playSuccess();
+      }
     } catch (err: any) {
       console.error('Analysis error:', err);
       let rawMsg = err.message || 'ไม่สามารถติดต่อระบบวิเคราะห์ได้ โปรดลองอีกครั้ง';
@@ -93,8 +128,14 @@ export default function App() {
       if (rawMsg.includes('503') || rawMsg.includes('high demand') || rawMsg.includes('UNAVAILABLE')) {
         rawMsg = 'ขณะนี้ระบบ AI มีผู้ใช้งานจำนวนมากชั่วคราว (High Demand) กรุณากดปุ่มลองใหม่อีกครั้ง';
       }
-      if (rawMsg.includes('GEMINI_API_KEY') || rawMsg.includes('API key not valid') || rawMsg.includes('API_KEY_INVALID')) {
-        rawMsg = 'ยังไม่ได้ตั้งค่า GEMINI_API_KEY: โปรดไปที่เมนู Settings (รูปฟันเฟือง ⚙️) > Secrets เพื่อใส่ GEMINI_API_KEY หรือใส่ในไฟล์ .env';
+      if (
+        rawMsg.includes('GEMINI_API_KEY') ||
+        rawMsg.includes('API key not valid') ||
+        rawMsg.includes('API_KEY_INVALID') ||
+        rawMsg.includes('SERVERLESS_404')
+      ) {
+        rawMsg =
+          'ยังไม่ได้ตั้งค่า GEMINI_API_KEY: หากใช้บน Vercel ให้ไปที่เมนู Project Settings > Environment Variables แล้วเพิ่ม GEMINI_API_KEY (หรือตั้งค่าใน Settings ของ AI Studio)';
       }
       setError(rawMsg);
     } finally {
